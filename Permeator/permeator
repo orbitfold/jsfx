@@ -1,0 +1,394 @@
+desc: Permeator
+//tags: advanced saturator
+//author: Orbitfold
+slider1:100<0,100,0.1>Mix (%)
+slider2:0<-12,24,0.1>Trim (dB)
+slider3:0<0,1,0.001>Character
+slider4:0<0,1,0.001>Asym
+slider5:0<0,1,0.001>Env->Character
+slider6:0<0,1,0.001>Env->Asym
+slider7:1<1,100,1>Env Attack (ms)
+slider8:30<1,300,1>Env Release (ms)
+slider9:0<-36,0,0.1>Env Treshold (dB)
+slider10:0<0,1,1{off,on}>Emphasis EQ
+slider11:0<-12,24,0.1>Emphasis 100 Hz
+slider12:0<-12,24,0.1>Emphasis 200 Hz
+slider13:0<-12,24,0.1>Emphasis 400 Hz
+slider14:0<-12,24,0.1>Emphasis 800 Hz
+slider15:0<-12,24,0.1>Emphasis 2.5 kHz
+slider16:0<-12,24,0.1>Emphasis 6 kHz
+slider17:0<-12,24,0.1>Emphasis 12 kHz
+slider18:1<0,1,1{off,on}>AGC
+slider19:0<-36,12,1>Gain (dB)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@slider
+  
+@init
+
+function saturate(x, drive, asym)
+(
+  pos = exp(drive * x * x * x + (1 - drive) * x);
+  neg = exp(-(drive * x * x * x + (1 - drive) * x));
+  (2 / (1 + 1 / asym)) * ((pos - neg) / (asym * pos + neg));
+);
+
+function db_to_ratio(x)
+(
+  10 ^ (x / 10);
+);
+
+function db_to_eq_ratio(x)
+(
+  10 ^ (x / 40);
+);
+
+function dc_blocker_update(x)
+(
+  this.y = x - this.xm1 + 0.995 * this.ym1;
+  this.xm1 = x;
+  this.ym1 = this.y;
+  this.y;
+);
+
+function slider_set_target(x, t)
+(
+  this.d = (x - this.value) / t;
+);
+
+function slider_update()
+(
+  this.value += this.d;
+);
+
+function lpf_init(oversampling)
+(
+  // 4th order Butterworth LPF
+  this.alpha = -2 * (cos((5 * $pi) / 8) + cos((7 * $pi) / 8));
+  this.beta = 2 * (1 + 2 * cos((5 * $pi) / 8) * cos((7 * $pi) / 8));
+  this.gamma = tan(($pi * 22000) / (srate * oversampling));
+  this.D = this.gamma ^ 4 + this.alpha * this.gamma ^ 3 + this.beta * this.gamma ^ 2 + this.alpha * this.gamma + 1;
+  this.b0 = (this.gamma ^ 4);
+  this.b1 = 4 * this.b0;
+  this.b2 = 6 * this.b0;
+  this.b3 = 4 * this.b0;
+  this.b4 = this.b0;
+  this.a1 = 2 * (2 * this.gamma ^ 4 + this.alpha * this.gamma ^ 3 - this.alpha * this.gamma - 2);
+  this.a2 = 2 * (3 * this.gamma ^ 4 - this.beta * this.gamma ^ 2 + 3);
+  this.a3 = 2 * (2 * this.gamma ^ 4 - this.alpha * this.gamma ^ 3 + this.alpha * this.gamma - 2);
+  this.a4 = this.gamma ^ 4 - this.alpha * this.gamma ^ 3 + this.beta * this.gamma ^ 2 - this.alpha * this.gamma + 1;
+  this.b0 /= this.D;
+  this.b1 /= this.D;
+  this.b2 /= this.D;
+  this.b3 /= this.D;
+  this.b4 /= this.D;
+  this.a1 /= this.D;
+  this.a2 /= this.D;
+  this.a3 /= this.D;
+  this.a4 /= this.D;
+  this.y = 0.0;
+  this.y1 = 0.0;
+  this.y2 = 0.0;
+  this.y3 = 0.0;
+  this.y4 = 0.0;
+  this.x1 = 0.0;
+  this.x2 = 0.0;
+  this.x3 = 0.0;
+  this.x4 = 0.0;
+);
+
+function lpf_process(x)
+(
+  // 4th order Butterworth LPF
+  this.y = this.b0 * x +
+           this.b1 * this.x1 + this.b2 * this.x2 + this.b3 * this.x3 + this.b4 * this.x4 - 
+           this.a1 * this.y1 - this.a2 * this.y2 - this.a3 * this.y3 - this.a4 * this.y4;
+  this.y4 = this.y3;
+  this.y3 = this.y2;
+  this.y2 = this.y1;
+  this.y1 = this.y;
+  this.x4 = this.x3;
+  this.x3 = this.x2;
+  this.x2 = this.x1;
+  this.x1 = x;
+  this.y;
+);
+
+function eq_band_init(freq)
+(
+  this.gain = 0;
+  this.freq = freq;
+  this.q = 0.8;
+  this.a = 10 ^ (this.gain / 40);
+  this.w0 = 2 * $pi * this.freq / srate;
+  this.cosw0 = cos(this.w0);
+  this.sinw0 = sin(this.w0);
+  this.alpha = this.sinw0 / (2 * this.q);
+
+  this.b0 = 1 + this.alpha * this.a;
+  this.b1 = -2 * this.cosw0;
+  this.b2 = 1 - this.alpha * this.a;
+  this.a0 = 1 + this.alpha / this.a;
+  this.a1 = -2 * this.cosw0;
+  this.a2 = 1 - this.alpha / this.a;
+  this.b0 /= this.a0;
+  this.b1 /= this.a0;
+  this.b2 /= this.a0;
+  this.a1 /= this.a0;
+  this.a2 /= this.a0;
+);
+
+function eq_band_process(x, gain)
+(
+  this.gain = gain;
+  this.a = 10 ^ (this.gain / 40);
+  this.b0 = 1 + this.alpha * this.a;
+  this.b1 = -2 * this.cosw0;
+  this.b2 = 1 - this.alpha * this.a;
+  this.a0 = 1 + this.alpha / this.a;
+  this.a1 = -2 * this.cosw0;
+  this.a2 = 1 - this.alpha / this.a;
+  this.b0 /= this.a0;
+  this.b1 /= this.a0;
+  this.b2 /= this.a0;
+  this.a1 /= this.a0;
+  this.a2 /= this.a0;
+  this.y = this.b0 * x + this.b1 * this.x1 + this.b2 * this.x2 - 
+    this.a1 * this.y1 - this.a2 * this.y2;
+  this.y2 = this.y1;
+  this.y1 = this.y;
+  this.x2 = this.x1;
+  this.x1 = x;
+  this.y;
+);
+
+function env_follow_init()
+(
+  this.value = 0.0000001;
+);
+
+function env_follow_process(x, thresh, attack, release)
+(
+  // Envelope follower with thresh, attack and release
+  abs_x = abs(x);
+  (abs_x > thresh) ? (
+    (this.on == 0) ? (
+      d = (1 / this.value) ^ (1 / attack);
+      this.on = 1;
+    );
+  ) : (
+    (this.on == 1) ? (
+      d = (0.0000001 / this.value) ^ (1 / release);
+      this.on = 0;
+    );
+  );
+  this.value *= d;
+);
+
+slider1_control.slider_set_target(slider1, 0);
+slider2_control.slider_set_target(slider2, 0);
+slider3_control.slider_set_target(slider3, 0);
+slider4_control.slider_set_target(slider4, 0);
+slider7_control.slider_set_target(slider7, 0);
+slider8_control.slider_set_target(slider8, 0);
+slider9_control.slider_set_target(slider9, 0);
+slider11_control.slider_set_target(slider11, 0);
+slider12_control.slider_set_target(slider12, 0);
+slider13_control.slider_set_target(slider13, 0);
+slider14_control.slider_set_target(slider14, 0);
+slider15_control.slider_set_target(slider15, 0);
+slider16_control.slider_set_target(slider16, 0);
+slider17_control.slider_set_target(slider17, 0);
+slider19_control.slider_set_target(slider19, 0);
+
+samples_l = 0;
+samples_r = 16;
+
+oversampling = 8;
+
+// oversampling filters init
+lpf_up_l_1.lpf_init(oversampling);
+lpf_up_r_1.lpf_init(oversampling);
+lpf_up_l_2.lpf_init(oversampling);
+lpf_up_r_2.lpf_init(oversampling);
+lpf_up_l_3.lpf_init(oversampling);
+lpf_up_r_3.lpf_init(oversampling);
+lpf_down_l_1.lpf_init(oversampling);
+lpf_down_r_1.lpf_init(oversampling);
+lpf_down_l_2.lpf_init(oversampling);
+lpf_down_r_2.lpf_init(oversampling);
+lpf_down_l_3.lpf_init(oversampling);
+lpf_down_r_3.lpf_init(oversampling);
+
+// eq filters init
+eq_band_pre_100_l.eq_band_init(100);
+eq_band_pre_100_r.eq_band_init(100);
+eq_band_post_100_l.eq_band_init(100);
+eq_band_post_100_r.eq_band_init(100);
+eq_band_pre_200_l.eq_band_init(200);
+eq_band_pre_200_r.eq_band_init(200);
+eq_band_post_200_l.eq_band_init(200);
+eq_band_post_200_r.eq_band_init(200);
+eq_band_pre_400_l.eq_band_init(400);
+eq_band_pre_400_r.eq_band_init(400);
+eq_band_post_400_l.eq_band_init(400);
+eq_band_post_400_r.eq_band_init(400);
+eq_band_pre_800_l.eq_band_init(800);
+eq_band_pre_800_r.eq_band_init(800);
+eq_band_post_800_l.eq_band_init(800);
+eq_band_post_800_r.eq_band_init(800);
+eq_band_pre_2500_l.eq_band_init(2500);
+eq_band_pre_2500_r.eq_band_init(2500);
+eq_band_post_2500_l.eq_band_init(2500);
+eq_band_post_2500_r.eq_band_init(2500);
+eq_band_pre_6000_l.eq_band_init(6000);
+eq_band_pre_6000_r.eq_band_init(6000);
+eq_band_post_6000_l.eq_band_init(6000);
+eq_band_post_6000_r.eq_band_init(6000);
+eq_band_pre_12000_l.eq_band_init(12000);
+eq_band_pre_12000_r.eq_band_init(12000);
+eq_band_post_12000_l.eq_band_init(12000);
+eq_band_post_12000_r.eq_band_init(12000);
+
+// env followers
+env_follow_l.env_follow_init();
+env_follow_r.env_follow_init();
+
+@block
+// This is to ensure smooth slider value transition
+slider1_control.slider_set_target(slider1, samplesblock);
+slider2_control.slider_set_target(slider2, samplesblock);
+slider3_control.slider_set_target(slider3, samplesblock);
+slider4_control.slider_set_target(slider4, samplesblock);
+slider7_control.slider_set_target(slider7, samplesblock);
+slider8_control.slider_set_target(slider8, samplesblock);
+slider9_control.slider_set_target(slider9, samplesblock);
+slider11_control.slider_set_target(slider11, samplesblock);
+slider12_control.slider_set_target(slider12, samplesblock);
+slider13_control.slider_set_target(slider13, samplesblock);
+slider14_control.slider_set_target(slider14, samplesblock);
+slider15_control.slider_set_target(slider15, samplesblock);
+slider16_control.slider_set_target(slider16, samplesblock);
+slider17_control.slider_set_target(slider17, samplesblock);
+slider19_control.slider_set_target(slider19, samplesblock);
+
+@sample
+
+// Get values of sliders, scale and convert where necessary
+mix = slider1_control.value / 100;
+trim = db_to_ratio(slider2_control.value);
+drive = slider3_control.value;
+asym = 1 + (slider4_control.value ^ 3) * 5;
+attack = (slider7_control.value / 1000) * srate * oversampling;
+release = (slider8_control.value / 1000) * srate * oversampling;
+threshold = db_to_ratio(slider9_control.value);
+
+band1_gain = slider11_control.value;
+band2_gain = slider12_control.value;
+band3_gain = slider13_control.value;
+band4_gain = slider14_control.value;
+band5_gain = slider15_control.value;
+band6_gain = slider16_control.value;
+band7_gain = slider17_control.value;
+
+gain = db_to_ratio(slider19_control.value);
+
+// Update slider values (interpolation)
+slider1_control.slider_update();
+slider2_control.slider_update();
+slider3_control.slider_update();
+slider4_control.slider_update();
+
+slider11_control.slider_update();
+slider12_control.slider_update();
+slider13_control.slider_update();
+slider14_control.slider_update();
+slider15_control.slider_update();
+slider16_control.slider_update();
+slider17_control.slider_update();
+
+slider19_control.slider_update();
+
+// Trim
+spl0 = trim * spl0;
+spl1 = trim * spl1;
+
+// Pre-emphasis EQ
+spl0 = eq_band_pre_100_l.eq_band_process(spl0, band1_gain);
+spl1 = eq_band_pre_100_r.eq_band_process(spl1, band1_gain);
+spl0 = eq_band_pre_200_l.eq_band_process(spl0, band2_gain);
+spl1 = eq_band_pre_200_r.eq_band_process(spl1, band2_gain);
+spl0 = eq_band_pre_400_l.eq_band_process(spl0, band3_gain);
+spl1 = eq_band_pre_400_r.eq_band_process(spl1, band3_gain);
+spl0 = eq_band_pre_800_l.eq_band_process(spl0, band4_gain);
+spl1 = eq_band_pre_800_r.eq_band_process(spl1, band4_gain);
+spl0 = eq_band_pre_2500_l.eq_band_process(spl0, band5_gain);
+spl1 = eq_band_pre_2500_r.eq_band_process(spl1, band5_gain);
+spl0 = eq_band_pre_6000_l.eq_band_process(spl0, band6_gain);
+spl1 = eq_band_pre_6000_r.eq_band_process(spl1, band6_gain);
+spl0 = eq_band_pre_12000_l.eq_band_process(spl0, band7_gain);
+spl1 = eq_band_pre_12000_r.eq_band_process(spl1, band7_gain);
+
+// Fill the sample buffers with oversampled data
+i = 0;
+loop(oversampling,
+  samples_l[i] = spl0;
+  samples_r[i] = spl1;
+  i += 1;
+);
+
+i = 0;
+loop(oversampling,
+  // Oversampling filter with fc at 20kHz
+  samples_l[i] = lpf_up_l_1.lpf_process(samples_l[i]);
+  samples_r[i] = lpf_up_r_1.lpf_process(samples_r[i]);
+  samples_l[i] = lpf_up_l_2.lpf_process(samples_l[i]);
+  samples_r[i] = lpf_up_r_2.lpf_process(samples_r[i]);
+  samples_l[i] = lpf_up_l_3.lpf_process(samples_l[i]);
+  samples_r[i] = lpf_up_r_3.lpf_process(samples_r[i]);
+  // Apply saturatiob
+  samples_l[i] = saturate(samples_l[i], drive, asym);
+  samples_r[i] = saturate(samples_r[i], drive, asym);
+  // Oversampling filter again with fc at 20kHz
+  samples_l[i] = lpf_down_l_1.lpf_process(samples_l[i]);
+  samples_r[i] = lpf_down_r_1.lpf_process(samples_r[i]);
+  samples_l[i] = lpf_down_l_2.lpf_process(samples_l[i]);
+  samples_r[i] = lpf_down_r_2.lpf_process(samples_r[i]);
+  samples_l[i] = lpf_down_l_3.lpf_process(samples_l[i]);
+  samples_r[i] = lpf_down_r_3.lpf_process(samples_r[i]);
+  i += 1;
+);
+
+
+// Downsample
+y1 = samples_l[0];
+y2 = samples_r[0];
+
+// Post-emphasis EQ
+y1 = eq_band_post_100_l.eq_band_process(y1, -band1_gain);
+y2 = eq_band_post_100_r.eq_band_process(y2, -band1_gain);
+y1 = eq_band_post_200_l.eq_band_process(y1, -band2_gain);
+y2 = eq_band_post_200_r.eq_band_process(y2, -band2_gain);
+y1 = eq_band_post_400_l.eq_band_process(y1, -band3_gain);
+y2 = eq_band_post_400_r.eq_band_process(y2, -band3_gain);
+y1 = eq_band_post_800_l.eq_band_process(y1, -band4_gain);
+y2 = eq_band_post_800_r.eq_band_process(y2, -band4_gain);
+y1 = eq_band_post_2500_l.eq_band_process(y1, -band5_gain);
+y2 = eq_band_post_2500_r.eq_band_process(y2, -band5_gain);
+y1 = eq_band_post_6000_l.eq_band_process(y1, -band6_gain);
+y2 = eq_band_post_6000_r.eq_band_process(y2, -band6_gain);
+y1 = eq_band_post_12000_l.eq_band_process(y1, -band7_gain);
+y2 = eq_band_post_12000_r.eq_band_process(y2, -band7_gain);
+
+// DC blocker
+y1 = dc_blocker_l.dc_blocker_update(y1);
+y2 = dc_blocker_r.dc_blocker_update(y2);
+
+// Apply gain compensation
+spl0 = y1 * gain;
+spl1 = y2 * gain;
+
